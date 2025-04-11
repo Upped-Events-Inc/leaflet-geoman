@@ -1,7 +1,7 @@
 import lineIntersect from '@turf/line-intersect';
 import lineSplit from '@turf/line-split';
 import booleanContains from '@turf/boolean-contains';
-import get from 'lodash/get';
+import get from '../helpers/get';
 import Draw from './L.PM.Draw';
 import {
   difference,

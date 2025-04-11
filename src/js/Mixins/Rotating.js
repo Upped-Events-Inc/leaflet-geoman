@@ -1,4 +1,4 @@
-import get from 'lodash/get';
+import get from '../helpers/get';
 import { _convertLatLngs, _toPoint } from '../helpers/ModeHelper';
 import { calcAngle, copyLatLngs } from '../helpers';
 

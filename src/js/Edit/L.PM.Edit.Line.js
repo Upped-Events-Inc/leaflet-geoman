@@ -1,6 +1,6 @@
 import kinks from '@turf/kinks';
 import lineIntersect from '@turf/line-intersect';
-import get from 'lodash/get';
+import get from '../helpers/get';
 import Edit from './L.PM.Edit';
 import { copyLatLngs, hasValues, removeEmptyCoordRings } from '../helpers';
 
@@ -782,7 +782,8 @@ Edit.Line = Edit.extend({
 
     // if self intersection is not allowed but this edit caused a self intersection,
     // reset and cancel; do not fire events
-    let intersection = !this.options.allowSelfIntersection && this.hasSelfIntersection();
+    let intersection =
+      !this.options.allowSelfIntersection && this.hasSelfIntersection();
     if (
       intersection &&
       this.options.allowSelfIntersectionEdit &&

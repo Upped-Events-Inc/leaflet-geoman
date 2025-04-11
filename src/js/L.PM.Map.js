@@ -1,4 +1,4 @@
-import merge from 'lodash/merge';
+import merge from 'lodash.merge';
 import translations from '../assets/translations';
 import GlobalEditMode from './Mixins/Modes/Mode.Edit';
 import GlobalDragMode from './Mixins/Modes/Mode.Drag';

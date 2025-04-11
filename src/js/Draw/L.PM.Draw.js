@@ -1,4 +1,4 @@
-import merge from 'lodash/merge';
+import merge from 'lodash.merge';
 import SnapMixin from '../Mixins/Snapping';
 import EventMixin from '../Mixins/Events';
 
