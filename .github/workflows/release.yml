@@ -203,6 +203,17 @@ jobs:
         with:
           name: build-artifacts
           
+      - name: List files after artifact download
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in dist directory (if exists):"
+          ls -la dist || echo "dist directory not found"
+          echo "Looking for tgz files:"
+          find . -name "*.tgz"
+          
       - name: Generate Release Notes
         id: release_notes
         run: |
@@ -236,24 +247,46 @@ jobs:
           body_path: release_notes.md
           token: ${{ secrets.GITHUB_TOKEN }}
           files: |
-            ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
+            *.tgz
             LICENSE
+
+      - name: Find tarball file for publishing
+        id: find_tarball
+        run: |
+          # Find the tarball file that was created
+          TARBALL=$(find . -name "*.tgz" | head -n 1)
+          if [ -n "$TARBALL" ]; then
+            echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
+            echo "Found tarball: $TARBALL"
+          else
+            echo "No tarball found, will attempt to create one"
+            npm pack
+            TARBALL=$(find . -name "*.tgz" | head -n 1)
+            echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
+            echo "Created tarball: $TARBALL"
+          fi
 
       - name: Publish to GitHub Packages
         id: publish
-        run: npm publish ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz && echo "success=true" >> $GITHUB_OUTPUT || echo "success=false" >> $GITHUB_OUTPUT
+        run: |
+          if [ -f "${{ steps.find_tarball.outputs.tarball }}" ]; then
+            npm publish "${{ steps.find_tarball.outputs.tarball }}" && echo "success=true" >> $GITHUB_OUTPUT || echo "success=false" >> $GITHUB_OUTPUT
+          else
+            echo "Tarball not found, publishing from current directory"
+            npm publish && echo "success=true" >> $GITHUB_OUTPUT || echo "success=false" >> $GITHUB_OUTPUT
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Notify Slack
-        uses: slackapi/slack-github-action@v2.0.0
-        with:
-          webhook-type: webhook-trigger
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            version: "${{ needs.version.outputs.new_version }}"
-            product_name: "Leaflet Geoman"
-            repo: "leaflet-geoman"
+      # - name: Notify Slack
+      #   uses: slackapi/slack-github-action@v2.0.0
+      #   with:
+      #     webhook-type: webhook-trigger
+      #     webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+      #     payload: |
+      #       version: "${{ needs.version.outputs.new_version }}"
+      #       product_name: "Leaflet Geoman"
+      #       repo: "leaflet-geoman"
 
   cleanup-on-failure:
     name: Cleanup on Failure
