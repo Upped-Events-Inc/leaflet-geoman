@@ -1,7 +1,7 @@
 import * as L from 'leaflet';
 
 // redeclare module, maintains compatibility with @types/leaflet
-declare module 'leaflet' {
+declare module 'leaflet-geoman' {
   /**
    * Extends built in leaflet Layer Options.
    */

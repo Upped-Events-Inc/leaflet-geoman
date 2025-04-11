@@ -1,5 +1,5 @@
 {
-  "name": "@geoman-io/leaflet-geoman-free",
+  "name": "@upped-events-inc/leaflet-geoman",
   "version": "2.18.3",
   "description": "A Leaflet Plugin For Editing Geometry Layers in Leaflet 1.0",
   "keywords": [
