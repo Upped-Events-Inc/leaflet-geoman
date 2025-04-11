@@ -10,17 +10,21 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   FILE_NAME_PREFIX: geoman-io-leaflet-geoman
-  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
 jobs:
   # Skip workflow run if commit message contains [skip ci]
   check_skip:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]')
     steps:
+      - id: skip_check
+        run: |
+          echo "should_skip=false" >> $GITHUB_OUTPUT
       - run: echo "Proceeding with workflow run"
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
@@ -68,17 +72,15 @@ jobs:
       - name: Prettier check
         run: npm run prettier -- --check
 
-  release:
-    name: Version, Build and Release
+  version:
+    name: Increment Version
     needs: [test, lint]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    environment: release
+    outputs:
+      new_version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GEOMAN_RELEASE_TOKEN }}
       
       - name: Use Node.js 22.x
         uses: actions/setup-node@v4
@@ -110,12 +112,68 @@ jobs:
           git tag v$NEW_VERSION
           git push origin HEAD:master --follow-tags
 
+  build:
+    name: Build Project
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master # Use the latest code with the version bump
+      
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+      
       - name: Build project
         run: npm run build
+        
+      - name: Prepare package
+        run: npm pack
+        
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            ${{env.FILE_NAME_PREFIX}}-*.tgz
+            LICENSE
 
+  release:
+    name: Create Release and Publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master # Use the latest code with the version bump
+      
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@upped-events-inc'
+          cache: 'npm'
+        
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
+          
       - name: Generate Release Notes
         id: release_notes
         run: |
+          # Get the version from the previous job
+          NEW_VERSION="${{ needs.version.outputs.new_version }}"
+          
           # Get the previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           
@@ -128,56 +186,35 @@ jobs:
           fi
           
           # Create release notes with commit history
-          echo "# Changes in v${{ steps.version.outputs.version }}" > release_notes.md
+          echo "# Changes in v${NEW_VERSION}" > release_notes.md
           echo "" >> release_notes.md
           echo "$COMMITS" >> release_notes.md
-          echo "RELEASE_NOTES<<EOF" >> $GITHUB_ENV
-          cat release_notes.md >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-      - name: Prepare package
-        run: npm pack
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          name: v${{ steps.version.outputs.version }}
-          tag_name: v${{ steps.version.outputs.version }}
-          body: ${{ env.RELEASE_NOTES }}
-          token: ${{ secrets.GEOMAN_RELEASE_TOKEN }}
+          name: v${{ needs.version.outputs.new_version }}
+          tag_name: v${{ needs.version.outputs.new_version }}
+          body_path: release_notes.md
+          token: ${{ secrets.GITHUB_TOKEN }}
           files: |
-            ${{env.FILE_NAME_PREFIX}}-${{ steps.version.outputs.version }}.tgz
+            ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
             LICENSE
+            "files": [
+              "dist"
+            ]
 
-      - name: Publish to NPM
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
-          npm publish --access public
+      - name: Publish to GitHub Packages
+        run: npm publish ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Slack
-        uses: slackapi/slack-github-action@v1.24.0
+        uses: slackapi/slack-github-action@v2.0.0
         with:
+          webhook-type: webhook-trigger
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           payload: |
-            {
-              "text": "🚀 New Release: v${{ steps.version.outputs.version }}",
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "🚀 New Release: v${{ steps.version.outputs.version }}",
-                    "emoji": true
-                  }
-                },
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "The package @upped-events-inc/leaflet-geoman has been published to NPM.\n<https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}|View Release on GitHub>"
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+            version: "${{ needs.version.outputs.new_version }}"
+            product_name: "Leaflet Geoman"
+            repo: "leaflet-geoman"
