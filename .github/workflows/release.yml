@@ -7,6 +7,8 @@ on:
     paths-ignore:
       - '**.md'
       - '.github/workflows/**'
+  workflow_dispatch:
+    # Allows manual triggering of the workflow
 
 permissions:
   contents: write
@@ -20,14 +22,15 @@ jobs:
   check_skip:
     runs-on: ubuntu-latest
     if: |
-      !contains(github.event.head_commit.message, '[skip ci]')
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[ci skip]') &&
+      !contains(github.event.head_commit.message, '[no ci]') &&
+      !contains(github.event.head_commit.message, 'chore: revert version') &&
+      !contains(github.event.head_commit.message, 'chore: bump version to')
     steps:
-      - id: skip_check
-        run: |
-          echo "should_skip=false" >> $GITHUB_OUTPUT
       - run: echo "Proceeding with workflow run"
     outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+      should_skip: 'false'
 
   test:
     needs: check_skip
@@ -41,9 +44,10 @@ jobs:
         with:
           node-version: 22.x
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --prefer-offline
       
       - name: Run tests
         run: npm test
@@ -62,9 +66,10 @@ jobs:
         with:
           node-version: 22.x
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --prefer-offline
       
       - name: ESLint check
         run: npm run eslint
@@ -87,6 +92,7 @@ jobs:
         with:
           node-version: 22.x
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
         run: npm ci
@@ -126,6 +132,7 @@ jobs:
         with:
           node-version: 22.x
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
         run: npm ci
@@ -149,6 +156,8 @@ jobs:
     name: Create Release and Publish
     needs: [version, build]
     runs-on: ubuntu-latest
+    outputs:
+      release_created: 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -162,6 +171,7 @@ jobs:
           registry-url: 'https://npm.pkg.github.com'
           scope: '@upped-events-inc'
           cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
         
       - name: Download build artifacts
         uses: actions/download-artifact@v3
@@ -189,6 +199,9 @@ jobs:
           echo "# Changes in v${NEW_VERSION}" > release_notes.md
           echo "" >> release_notes.md
           echo "$COMMITS" >> release_notes.md
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          echo "$COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -200,12 +213,10 @@ jobs:
           files: |
             ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
             LICENSE
-            "files": [
-              "dist"
-            ]
 
       - name: Publish to GitHub Packages
-        run: npm publish ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
+        id: publish
+        run: npm publish ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz && echo "success=true" >> $GITHUB_OUTPUT || echo "success=false" >> $GITHUB_OUTPUT
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -218,3 +229,92 @@ jobs:
             version: "${{ needs.version.outputs.new_version }}"
             product_name: "Leaflet Geoman"
             repo: "leaflet-geoman"
+
+  cleanup-on-failure:
+    name: Cleanup on Failure
+    needs: [version, release]
+    if: ${{ always() && needs.version.outputs.new_version != '' && (failure() || needs.release.result == 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+
+      - name: Delete GitHub Release and Undo Version Bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: v${{ needs.version.outputs.new_version }}
+        run: |
+          echo "Cleaning up failed release for version: ${TAG_NAME} on branch: ${{ github.ref_name }}"
+          
+          # Pull latest changes to ensure we have the most up-to-date code
+          git pull
+          
+          # Delete the GitHub release
+          release_id=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG_NAME}" | \
+            jq -r '.id')
+          
+          if [ "$release_id" != "null" ]; then
+            curl -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/${release_id}"
+            echo "Deleted release with ID: ${release_id}"
+          else
+            echo "No release found for tag ${TAG_NAME}"
+          fi
+          
+          # Delete the tag
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git tag -d ${TAG_NAME} 2>/dev/null || echo "Tag ${TAG_NAME} not found locally"
+          git push --delete origin ${TAG_NAME} 2>/dev/null || echo "Tag ${TAG_NAME} not found on remote"
+          echo "Removed tag: ${TAG_NAME}"
+          
+          # Look for previous version
+          if [ -n "$(git tag)" ]; then
+            # Get the latest tag that is not the one being deleted
+            PREV_TAG=$(git tag --sort=-v:refname | grep -v "${TAG_NAME}" | head -n 1)
+            if [ -n "$PREV_TAG" ]; then
+              echo "Found previous tag: ${PREV_TAG}"
+              PREV_VERSION=${PREV_TAG#v}
+              echo "Previous version: ${PREV_VERSION}"
+              
+              # Check the current version using both node and direct file reading
+              CURRENT_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
+              CURRENT_VERSION_DIRECT=$(grep -o '"version": "[^"]*"' package.json | sed 's/"version": "\([^"]*\)"/\1/')
+              echo "Current version (via node): ${CURRENT_VERSION}"
+              echo "Current version (direct): ${CURRENT_VERSION_DIRECT}"
+              
+              # Determine if we need to update based on direct version reading
+              if [ "${CURRENT_VERSION_DIRECT}" != "${PREV_VERSION}" ]; then
+                echo "Version in package.json needs to be updated to ${PREV_VERSION}"
+                # Backup current package.json
+                cp package.json package.json.bak
+                # Update version using sed (more reliable for this purpose)
+                sed -i 's/"version": "[^"]*"/"version": "'${PREV_VERSION}'"/' package.json
+                # Verify the change
+                diff package.json package.json.bak || echo "Version update verified"
+                # Commit the change
+                git add package.json
+                git commit -m "chore: revert version bump to ${PREV_VERSION} [skip ci]"
+                git push
+                echo "Successfully reverted version to ${PREV_VERSION}"
+              else
+                echo "Version in package.json is already ${CURRENT_VERSION_DIRECT}, no update needed"
+              fi
+            else
+              echo "No previous tag found, cannot determine previous version"
+            fi
+          else
+            echo "No tags found in the repository"
+          fi
+          
+          echo "Cleanup completed!"
