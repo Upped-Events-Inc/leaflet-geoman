@@ -133,46 +133,9 @@ jobs:
           git tag v$NEW_VERSION
           git push origin HEAD:master --follow-tags
 
-  build:
-    name: Build Project
+  build-and-release:
+    name: Build, Release and Publish
     needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master # Use the latest code with the version bump
-      
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: latest
-
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Build project
-        run: npm run build
-        
-      - name: Prepare package
-        run: npm pack
-        
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: |
-            ${{env.FILE_NAME_PREFIX}}-*.tgz
-
-  release:
-    name: Create Release and Publish
-    needs: [version, build]
     runs-on: ubuntu-latest
     outputs:
       release_created: 'true'
@@ -190,16 +153,24 @@ jobs:
           scope: '@upped-events-inc'
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
-        
+
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
           version: latest
+
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
         
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
+      - name: List files after build
+        run: |
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in dist directory (if exists):"
+          ls -la dist || echo "dist directory not found"
           
       - name: Generate Release Notes
         id: release_notes
@@ -233,9 +204,6 @@ jobs:
           tag_name: v${{ needs.version.outputs.new_version }}
           body_path: release_notes.md
           token: ${{ secrets.GITHUB_TOKEN }}
-          files: |
-            ${{env.FILE_NAME_PREFIX}}-${{ needs.version.outputs.new_version }}.tgz
-            LICENSE
 
       - name: Publish to GitHub Packages
         id: publish
@@ -255,8 +223,8 @@ jobs:
 
   cleanup-on-failure:
     name: Cleanup on Failure
-    needs: [version, release]
-    if: ${{ always() && needs.version.outputs.new_version != '' && (failure() || needs.release.result == 'failure') }}
+    needs: [version, build-and-release]
+    if: ${{ always() && needs.version.outputs.new_version != '' && (failure() || needs.build-and-release.result == 'failure') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source branch
